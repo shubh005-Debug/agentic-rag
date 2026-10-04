@@ -1,0 +1,30 @@
+# Baseline dependencies actually imported by the code (Python 3.12).
+# Versions taken from the Windows venv on 2026-10-04 (Python 3.12.0).
+# NOTE: that venv also contains experiment packages (unstructured, torch,
+# transformers, spacy, ...). They are NOT needed and are excluded here.
+# Transitive packages are intentionally not listed; pip resolves them.
+
+fastapi==0.141.1
+uvicorn==0.53.0
+python-multipart==0.0.32
+pydantic==2.13.5
+python-dotenv==1.2.3
+
+supabase==2.31.0
+
+pymupdf==1.28.2
+langchain-text-splitters==1.1.2
+
+huggingface_hub==1.32.0
+numpy==2.5.2
+
+groq==0.37.1
+cohere==7.1.1
+
+celery==5.6.3
+redis==8.1.0
+
+# Installed in the Windows venv but NOT imported anywhere, so excluded:
+#   langchain-groq, pydantic-settings
+# Experimental, not part of the baseline (kept out on purpose):
+#   unstructured

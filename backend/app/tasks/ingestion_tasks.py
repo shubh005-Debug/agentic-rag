@@ -1,4 +1,7 @@
 import os
+import tempfile
+
+from celery.utils.log import get_task_logger
 
 from celery_app import celery_app
 
@@ -7,13 +10,49 @@ from app.services.chunking import split_pages
 from app.services.embeddings import generate_embeddings
 from app.database.supabase import supabase
 
+logger = get_task_logger(__name__)
+
+STORAGE_BUCKET = "documents"
+INSERT_BATCH_SIZE = 100
+
 
 @celery_app.task
-def process_document(document_id: str, file_path: str):
+def process_document(document_id: str, storage_path: str):
+    """
+    Process an uploaded PDF.
+
+    The worker does NOT need access to the API's filesystem: it downloads
+    the PDF from Supabase Storage using storage_path, so the API and the
+    worker can run on different machines / operating systems.
+    """
 
     try:
 
-        pages = extract_pages_from_pdf(file_path)
+        supabase \
+            .table("documents") \
+            .update({
+                "status": "processing"
+            }) \
+            .eq("id", document_id) \
+            .execute()
+
+        # 1. Download the PDF from Supabase Storage
+        pdf_bytes = (
+            supabase
+            .storage
+            .from_(STORAGE_BUCKET)
+            .download(storage_path)
+        )
+
+        # 2. Extract text (temporary directory is always cleaned up)
+        with tempfile.TemporaryDirectory() as tmp_dir:
+
+            pdf_path = os.path.join(tmp_dir, "document.pdf")
+
+            with open(pdf_path, "wb") as pdf_file:
+                pdf_file.write(pdf_bytes)
+
+            pages = extract_pages_from_pdf(pdf_path)
 
         chunks = split_pages(pages)
 
@@ -43,11 +82,20 @@ def process_document(document_id: str, file_path: str):
                 "embedding": embedding
             })
 
-        if chunk_records:
+        # Make the task safe to re-run: remove chunks from a previous attempt
+        supabase \
+            .table("document_chunks") \
+            .delete() \
+            .eq("document_id", document_id) \
+            .execute()
+
+        for start in range(0, len(chunk_records), INSERT_BATCH_SIZE):
 
             supabase \
                 .table("document_chunks") \
-                .insert(chunk_records) \
+                .insert(
+                    chunk_records[start:start + INSERT_BATCH_SIZE]
+                ) \
                 .execute()
 
         supabase \
@@ -66,17 +114,23 @@ def process_document(document_id: str, file_path: str):
 
     except Exception:
 
-        supabase \
-            .table("documents") \
-            .update({
-                "status": "failed"
-            }) \
-            .eq("id", document_id) \
-            .execute()
+        logger.exception(
+            "Document processing failed: %s",
+            document_id
+        )
+
+        try:
+            supabase \
+                .table("documents") \
+                .update({
+                    "status": "failed"
+                }) \
+                .eq("id", document_id) \
+                .execute()
+        except Exception:
+            logger.exception(
+                "Could not mark document as failed: %s",
+                document_id
+            )
 
         raise
-
-    finally:
-
-        if os.path.exists(file_path):
-            os.remove(file_path)
