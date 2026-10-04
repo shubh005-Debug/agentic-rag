@@ -1,0 +1,33 @@
+# Environment / API keys
+.env
+.env.*
+!.env.example
+
+# Python
+.venv/
+venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Uploaded files
+uploads/
+data/
+
+# Temporary files
+tmp/
+temp/
+
+# Model/cache
+.cache/
