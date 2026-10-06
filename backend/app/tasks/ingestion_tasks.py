@@ -5,8 +5,7 @@ from celery.utils.log import get_task_logger
 
 from celery_app import celery_app
 
-from app.services.documents import extract_pages_from_pdf
-from app.services.chunking import split_pages
+from app.services.structured_chunking import chunk_pdf
 from app.services.embeddings import generate_embeddings
 from app.database.supabase import supabase
 
@@ -44,7 +43,9 @@ def process_document(document_id: str, storage_path: str):
             .download(storage_path)
         )
 
-        # 2. Extract text (temporary directory is always cleaned up)
+        # 2. Extract + chunk (temporary directory is always cleaned up).
+        #    chunk_pdf() is structure-aware and falls back to the original
+        #    page-based pipeline automatically if it cannot handle the file.
         with tempfile.TemporaryDirectory() as tmp_dir:
 
             pdf_path = os.path.join(tmp_dir, "document.pdf")
@@ -52,9 +53,7 @@ def process_document(document_id: str, storage_path: str):
             with open(pdf_path, "wb") as pdf_file:
                 pdf_file.write(pdf_bytes)
 
-            pages = extract_pages_from_pdf(pdf_path)
-
-        chunks = split_pages(pages)
+            chunks = chunk_pdf(pdf_path)
 
         if not chunks:
             raise ValueError(
