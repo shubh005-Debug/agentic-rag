@@ -14,7 +14,10 @@ celery_app = Celery(
     "rag_project",
     broker=REDIS_URL,
     backend=REDIS_URL,
-    include=["app.tasks.ingestion_tasks"]
+    include=[
+        "app.tasks.ingestion_tasks",
+        "app.tasks.summary_tasks",
+    ]
 )
 
 celery_app.conf.update(

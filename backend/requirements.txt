@@ -26,5 +26,11 @@ redis==8.1.0
 
 # Installed in the Windows venv but NOT imported anywhere, so excluded:
 #   langchain-groq, pydantic-settings
-# Experimental, not part of the baseline (kept out on purpose):
-#   unstructured
+# Multimodal document parsing — installed in the project venv.
+# Needed for hi_res PDF extraction (tables + images).  The hi_res
+# stack (torch, unstructured_inference) is heavy; it is present in the
+# venv but not declared here as a strict baseline requirement.
+# Enable by setting PDF_HI_RES_ENABLED=true in .env.
+unstructured==0.27.10
+unstructured-inference==1.6.13
+unstructured.pytesseract==0.3.15
