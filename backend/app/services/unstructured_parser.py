@@ -84,7 +84,7 @@ def _configure_tesseract(
 
     explicit = os.getenv("TESSERACT_CMD", "").strip()
     if explicit:
-        tess_module.pytesseract_command = explicit
+        tess_module.tesseract_cmd = explicit
         logger.debug("Tesseract path set from TESSERACT_CMD: %s", explicit)
         return
 
@@ -94,7 +94,7 @@ def _configure_tesseract(
 
     for candidate in _WINDOWS_TESSERACT_FALLBACKS:
         if path_exists_fn(candidate):
-            tess_module.pytesseract_command = candidate
+            tess_module.tesseract_cmd = candidate
             logger.debug("Tesseract found at Windows default path: %s", candidate)
             return
 

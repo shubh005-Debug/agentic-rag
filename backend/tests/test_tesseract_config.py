@@ -3,6 +3,9 @@
 _configure_tesseract() accepts injectable dependencies so these tests require
 no Tesseract binary, no real filesystem access, and no heavy Unstructured
 import chains.
+
+The real attribute on unstructured_pytesseract.pytesseract is `tesseract_cmd`
+(a module-level string, confirmed by inspection).  All assertions use that name.
 """
 
 import logging
@@ -18,14 +21,14 @@ from app.services.unstructured_parser import _configure_tesseract
 # ---------------------------------------------------------------------------
 
 def _make_tess_stub():
-    """Return a simple object that mimics the pytesseract shim."""
-    return types.SimpleNamespace(pytesseract_command="tesseract")
+    """Return a simple object that mimics unstructured_pytesseract.pytesseract."""
+    return types.SimpleNamespace(tesseract_cmd="tesseract")
 
 
 def _run(monkeypatch, env_vars: dict, tess_on_path: bool, windows_paths: list[str]):
     """Call _configure_tesseract with controlled env and injected stubs.
 
-    Returns the stub pytesseract object so tests can inspect pytesseract_command.
+    Returns the stub so tests can inspect tesseract_cmd.
     """
     for key in ("TESSERACT_CMD",):
         monkeypatch.delenv(key, raising=False)
@@ -48,7 +51,7 @@ def _run(monkeypatch, env_vars: dict, tess_on_path: bool, windows_paths: list[st
 # ---------------------------------------------------------------------------
 
 def test_explicit_tesseract_cmd_is_used(monkeypatch):
-    """TESSERACT_CMD env var sets the pytesseract command path."""
+    """TESSERACT_CMD env var sets tesseract_cmd on the pytesseract module."""
     explicit = r"D:\custom\Tesseract-OCR\tesseract.exe"
     stub = _run(
         monkeypatch,
@@ -56,19 +59,19 @@ def test_explicit_tesseract_cmd_is_used(monkeypatch):
         tess_on_path=False,
         windows_paths=[],
     )
-    assert stub.pytesseract_command == explicit
+    assert stub.tesseract_cmd == explicit
 
 
 def test_tesseract_on_path_leaves_command_unchanged(monkeypatch):
-    """When Tesseract is on PATH and no TESSERACT_CMD is set, command is unchanged."""
+    """When Tesseract is on PATH and no TESSERACT_CMD is set, tesseract_cmd is unchanged."""
     stub = _run(
         monkeypatch,
         env_vars={},
         tess_on_path=True,
         windows_paths=[],
     )
-    # _configure_tesseract returns early without touching pytesseract_command
-    assert stub.pytesseract_command == "tesseract"
+    # _configure_tesseract returns early without touching tesseract_cmd
+    assert stub.tesseract_cmd == "tesseract"
 
 
 def test_windows_fallback_path_is_used(monkeypatch):
@@ -80,7 +83,7 @@ def test_windows_fallback_path_is_used(monkeypatch):
         tess_on_path=False,
         windows_paths=[win_path],
     )
-    assert stub.pytesseract_command == win_path
+    assert stub.tesseract_cmd == win_path
 
 
 def test_second_windows_fallback_used_when_first_missing(monkeypatch):
@@ -92,7 +95,7 @@ def test_second_windows_fallback_used_when_first_missing(monkeypatch):
         tess_on_path=False,
         windows_paths=[second_path],  # first path absent
     )
-    assert stub.pytesseract_command == second_path
+    assert stub.tesseract_cmd == second_path
 
 
 def test_missing_tesseract_emits_warning(monkeypatch, caplog):
@@ -126,4 +129,4 @@ def test_explicit_cmd_takes_priority_over_path_and_windows(monkeypatch):
         tess_on_path=True,
         windows_paths=[r"C:\Program Files\Tesseract-OCR\tesseract.exe"],
     )
-    assert stub.pytesseract_command == explicit
+    assert stub.tesseract_cmd == explicit
