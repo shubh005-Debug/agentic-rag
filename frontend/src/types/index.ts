@@ -51,9 +51,11 @@ export interface KBDocument {
  * key for toggling the expanded excerpt panel.
  */
 export interface SourceReference {
-  /** Chunk UUID — used as the toggle key for the expanded excerpt panel */
-  documentId: string;
-  /** Display name of the source document (resolved from UUID via document list) */
+  /** Chunk UUID — used as React toggle key AND for building the image URL */
+  chunkId: string;
+  /** Document UUID — used to resolve the document name and build the image URL */
+  documentUUID: string;
+  /** Display name of the source document */
   documentName: string;
   /** The raw chunk text */
   excerpt: string;
@@ -67,6 +69,8 @@ export interface SourceReference {
   tableHtml: string | null;
   /** AI-generated caption for image chunks */
   imageCaption: string | null;
+  /** True when an image file exists in Supabase Storage for this chunk */
+  hasImage: boolean;
 }
 
 export type MessageRole = 'user' | 'assistant';

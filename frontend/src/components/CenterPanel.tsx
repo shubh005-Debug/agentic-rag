@@ -36,7 +36,8 @@ function toSourceReference(src: AskSource, index: number, documents: KBDocument[
   const score = src.rerank_score ?? src.rrf_score ?? src.similarity ?? 0;
   const matchedDoc = documents.find((d) => d.id === src.document_id);
   return {
-    documentId: src.id ?? `src-${index}`,
+    chunkId: src.id ?? `src-${index}`,
+    documentUUID: src.document_id,
     documentName: matchedDoc ? matchedDoc.name : `Doc ${src.document_id.slice(0, 8)}…`,
     excerpt: src.content,
     page: src.page_number ?? undefined,
@@ -44,6 +45,7 @@ function toSourceReference(src: AskSource, index: number, documents: KBDocument[
     elementType: src.element_type ?? null,
     tableHtml: src.table_html ?? null,
     imageCaption: src.image_caption ?? null,
+    hasImage: src.has_image ?? false,
   };
 }
 

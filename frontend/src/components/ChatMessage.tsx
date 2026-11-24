@@ -1,6 +1,7 @@
 import { useState } from 'react';
-import { BookOpen, User, Bot, ChevronDown, ChevronUp, FileText, Table2, Image, Copy, Check } from 'lucide-react';
+import { BookOpen, User, Bot, ChevronDown, ChevronUp, FileText, Table2, ImageIcon, Copy, Check, ZoomIn, X } from 'lucide-react';
 import type { Message, SourceReference } from '../types';
+import { getChunkImageUrl } from '../services/api';
 
 interface ChatMessageProps {
   message: Message;
@@ -166,7 +167,7 @@ export default function ChatMessage({ message }: ChatMessageProps) {
   const isUser = message.role === 'user';
   const [activeSourceId, setActiveSourceId] = useState<string | null>(null);
 
-  const activeSource = message.sources?.find((s) => s.documentId === activeSourceId) ?? null;
+  const activeSource = message.sources?.find((s) => s.chunkId === activeSourceId) ?? null;
 
   return (
     <div className={`flex gap-3 ${isUser ? 'flex-row-reverse' : 'flex-row'}`}>
@@ -223,11 +224,11 @@ export default function ChatMessage({ message }: ChatMessageProps) {
 
             <div className="flex flex-wrap gap-1.5">
               {message.sources.map((src) => {
-                const isOpen = activeSourceId === src.documentId;
+                const isOpen = activeSourceId === src.chunkId;
                 return (
                   <button
-                    key={src.documentId}
-                    onClick={() => setActiveSourceId((p) => p === src.documentId ? null : src.documentId)}
+                    key={src.chunkId}
+                    onClick={() => setActiveSourceId((p) => p === src.chunkId ? null : src.chunkId)}
                     className="flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 transition-all text-xs"
                     style={isOpen
                       ? { background: 'rgba(124,58,237,0.15)', border: '1px solid rgba(124,58,237,0.5)', color: '#c4b5fd' }
@@ -266,44 +267,146 @@ export default function ChatMessage({ message }: ChatMessageProps) {
 function SourcePanel({ source }: { source: SourceReference }) {
   const isTable = source.elementType === 'Table';
   const isImage = source.elementType === 'Image';
+  const [lightbox, setLightbox] = useState(false);
+  const [imgError, setImgError] = useState(false);
+
+  const imageUrl = isImage && source.hasImage
+    ? getChunkImageUrl(source.documentUUID, source.chunkId)
+    : null;
 
   return (
-    <div className="w-full rounded-xl overflow-hidden" style={{ background: '#0d1117', border: '1px solid rgba(124,58,237,0.3)' }}>
-      <div className="flex items-center gap-2 px-3 py-2.5" style={{ background: '#111620', borderBottom: '1px solid #1e2433' }}>
-        <FileText size={12} style={{ color: '#7c6fcd', flexShrink: 0 }} />
-        <span className="text-xs font-semibold flex-1 truncate" style={{ color: '#c4b5fd' }}>{source.documentName}</span>
-        <div className="flex items-center gap-2 flex-shrink-0">
-          {source.elementType && source.elementType !== 'Text' && (
-            <span className="text-xs rounded px-1.5 py-0.5"
-              style={isTable
-                ? { background: 'rgba(245,158,11,0.1)', color: '#fbbf24', border: '1px solid rgba(245,158,11,0.3)' }
-                : { background: 'rgba(14,165,233,0.1)', color: '#38bdf8', border: '1px solid rgba(14,165,233,0.3)' }
-              }
-            >
-              {isTable ? <Table2 size={9} className="inline mr-1" /> : <Image size={9} className="inline mr-1" />}
-              {source.elementType}
-            </span>
+    <>
+      <div className="w-full rounded-xl overflow-hidden" style={{ background: '#0d1117', border: '1px solid rgba(124,58,237,0.3)' }}>
+        {/* Header */}
+        <div className="flex items-center gap-2 px-3 py-2.5" style={{ background: '#111620', borderBottom: '1px solid #1e2433' }}>
+          <FileText size={12} style={{ color: '#7c6fcd', flexShrink: 0 }} />
+          <span className="text-xs font-semibold flex-1 truncate" style={{ color: '#c4b5fd' }}>{source.documentName}</span>
+          <div className="flex items-center gap-2 flex-shrink-0">
+            {isTable && (
+              <span className="text-xs rounded px-1.5 py-0.5 flex items-center gap-1"
+                style={{ background: 'rgba(245,158,11,0.1)', color: '#fbbf24', border: '1px solid rgba(245,158,11,0.3)' }}>
+                <Table2 size={9} />Table
+              </span>
+            )}
+            {isImage && (
+              <span className="text-xs rounded px-1.5 py-0.5 flex items-center gap-1"
+                style={{ background: 'rgba(14,165,233,0.1)', color: '#38bdf8', border: '1px solid rgba(14,165,233,0.3)' }}>
+                <ImageIcon size={9} />Image
+              </span>
+            )}
+            {source.page !== undefined && <span className="text-xs" style={{ color: '#4a5568' }}>p.{source.page}</span>}
+            <span className="text-xs font-mono font-bold" style={{ color: '#68d391' }}>{Math.round(source.score * 100)}%</span>
+          </div>
+        </div>
+
+        {/* Body */}
+        <div className="px-4 py-3 space-y-3">
+
+          {/* Actual image from PDF */}
+          {imageUrl && !imgError && (
+            <div>
+              <div
+                className="relative group cursor-zoom-in rounded-xl overflow-hidden"
+                style={{ background: '#161b27', border: '1px solid #2a3346' }}
+                onClick={() => setLightbox(true)}
+              >
+                <img
+                  src={imageUrl}
+                  alt={source.imageCaption ?? 'Extracted image'}
+                  onError={() => setImgError(true)}
+                  className="w-full max-h-64 object-contain"
+                  style={{ display: 'block' }}
+                />
+                <div
+                  className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
+                  style={{ background: 'rgba(0,0,0,0.4)' }}
+                >
+                  <div className="flex items-center gap-1.5 rounded-lg px-3 py-1.5"
+                    style={{ background: 'rgba(0,0,0,0.7)', color: '#e2e8f0' }}>
+                    <ZoomIn size={13} />
+                    <span className="text-xs font-medium">View full size</span>
+                  </div>
+                </div>
+              </div>
+            </div>
           )}
-          {source.page !== undefined && <span className="text-xs" style={{ color: '#4a5568' }}>p.{source.page}</span>}
-          <span className="text-xs font-mono font-bold" style={{ color: '#68d391' }}>{Math.round(source.score * 100)}%</span>
+
+          {/* Image caption (AI-generated) */}
+          {isImage && source.imageCaption && !source.imageCaption.startsWith('[Image not analyzed') && (
+            <div className="flex items-start gap-2 rounded-lg px-3 py-2"
+              style={{ background: 'rgba(14,165,233,0.05)', border: '1px solid rgba(14,165,233,0.2)' }}>
+              <ImageIcon size={11} style={{ color: '#38bdf8', flexShrink: 0, marginTop: 2 }} />
+              <p className="text-xs italic leading-relaxed" style={{ color: '#7dd3fc' }}>{source.imageCaption}</p>
+            </div>
+          )}
+
+          {/* No image available fallback */}
+          {isImage && !imageUrl && (
+            <div className="flex items-center gap-2 rounded-lg px-3 py-2"
+              style={{ background: '#161b27', border: '1px solid #2a3346' }}>
+              <ImageIcon size={12} style={{ color: '#4a5568' }} />
+              <span className="text-xs" style={{ color: '#4a5568' }}>Image not available (hi-res extraction may be disabled)</span>
+            </div>
+          )}
+
+          {/* Table HTML */}
+          {isTable && source.tableHtml && (
+            <div>
+              <p className="text-xs font-semibold mb-1.5 flex items-center gap-1" style={{ color: '#fbbf24' }}>
+                <Table2 size={10} />Table content
+              </p>
+              <div
+                className="overflow-x-auto rounded-xl p-3 text-xs"
+                style={{ background: '#161b27', border: '1px solid rgba(245,158,11,0.2)' }}
+              >
+                <style>{`
+                  .rag-table table { width: 100%; border-collapse: collapse; }
+                  .rag-table th { background: #1e2433; padding: 6px 10px; text-align: left; color: #c4b5fd; font-weight: 600; border: 1px solid #2a3346; font-size: 11px; }
+                  .rag-table td { padding: 5px 10px; border: 1px solid #1e2433; color: #a0aec0; font-size: 11px; }
+                  .rag-table tr:nth-child(even) td { background: rgba(255,255,255,0.02); }
+                `}</style>
+                <div className="rag-table" dangerouslySetInnerHTML={{ __html: source.tableHtml }} />
+              </div>
+            </div>
+          )}
+
+          {/* Text excerpt — always shown */}
+          {source.excerpt && (
+            <p className="text-xs leading-relaxed whitespace-pre-wrap" style={{ color: '#718096' }}>{source.excerpt}</p>
+          )}
+
         </div>
       </div>
-      <div className="px-4 py-3 space-y-3">
-        <p className="text-xs leading-relaxed whitespace-pre-wrap" style={{ color: '#718096' }}>{source.excerpt}</p>
-        {isTable && source.tableHtml && (
-          <div className="overflow-x-auto rounded-lg p-2 text-xs"
-            style={{ background: '#161b27', border: '1px solid rgba(245,158,11,0.2)' }}
-            dangerouslySetInnerHTML={{ __html: source.tableHtml }}
+
+      {/* Lightbox */}
+      {lightbox && imageUrl && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-6"
+          style={{ background: 'rgba(0,0,0,0.9)', backdropFilter: 'blur(8px)' }}
+          onClick={() => setLightbox(false)}
+        >
+          <button
+            onClick={() => setLightbox(false)}
+            className="absolute top-4 right-4 w-9 h-9 rounded-xl flex items-center justify-center transition-all"
+            style={{ background: '#161b27', border: '1px solid #2a3346' }}
+          >
+            <X size={16} style={{ color: '#718096' }} />
+          </button>
+          <img
+            src={imageUrl}
+            alt={source.imageCaption ?? 'Extracted image'}
+            className="max-w-full max-h-full rounded-xl"
+            style={{ objectFit: 'contain', boxShadow: '0 25px 60px rgba(0,0,0,0.8)' }}
+            onClick={e => e.stopPropagation()}
           />
-        )}
-        {isImage && source.imageCaption && (
-          <div className="flex items-start gap-2 rounded-lg px-3 py-2"
-            style={{ background: 'rgba(14,165,233,0.05)', border: '1px solid rgba(14,165,233,0.2)' }}>
-            <Image size={11} style={{ color: '#38bdf8', flexShrink: 0, marginTop: 1 }} />
-            <p className="text-xs italic leading-relaxed" style={{ color: '#7dd3fc' }}>{source.imageCaption}</p>
-          </div>
-        )}
-      </div>
-    </div>
+          {source.imageCaption && !source.imageCaption.startsWith('[Image not analyzed') && (
+            <p className="absolute bottom-6 left-0 right-0 text-center text-sm italic px-8"
+              style={{ color: '#a0aec0' }}>
+              {source.imageCaption}
+            </p>
+          )}
+        </div>
+      )}
+    </>
   );
 }
