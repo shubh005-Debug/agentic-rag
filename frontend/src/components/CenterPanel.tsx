@@ -1,18 +1,7 @@
 /**
- * src/components/CenterPanel.tsx
- *
- * Main chat panel: conversation header, message list, input box.
- *
- * Messages are now persisted:
- *   - History loads from GET /conversations/{id}/messages (via useMessages)
- *   - Each user message is saved via POST before the /ask call
- *   - Each assistant message (+ sources) is saved after the /ask response
- *
- * Renaming a conversation calls PATCH /conversations/{id} and updates
- * the left panel list immediately.
- *
- * The outer CenterPanel passes key={conversation.id} so the inner component
- * remounts cleanly on conversation switch.
+ * CenterPanel — main chat area.
+ * Fully live: messages load from and persist to the backend.
+ * Zero mock data.
  */
 
 import { useEffect, useRef, useState } from 'react';
@@ -22,12 +11,11 @@ import {
   Check,
   FileSearch,
   Loader2,
-  MoreHorizontal,
   Pencil,
   Send,
   Sparkles,
-  Trash2,
   X,
+  Zap,
 } from 'lucide-react';
 import type { ApiConversation, ApiProject, AskSource } from '../services/api';
 import type { UseMessagesReturn } from '../hooks/useMessages';
@@ -44,21 +32,12 @@ interface CenterPanelProps {
   onRenameConversation: (id: string, title: string) => Promise<void>;
 }
 
-/** Convert a backend AskSource to the SourceReference shape used by the UI. */
-function toSourceReference(
-  src: AskSource,
-  index: number,
-  documents: KBDocument[],
-): SourceReference {
+function toSourceReference(src: AskSource, index: number, documents: KBDocument[]): SourceReference {
   const score = src.rerank_score ?? src.rrf_score ?? src.similarity ?? 0;
   const matchedDoc = documents.find((d) => d.id === src.document_id);
-  const documentName = matchedDoc
-    ? matchedDoc.name
-    : `Doc ${src.document_id.slice(0, 8)}…`;
-
   return {
     documentId: src.id ?? `src-${index}`,
-    documentName,
+    documentName: matchedDoc ? matchedDoc.name : `Doc ${src.document_id.slice(0, 8)}…`,
     excerpt: src.content,
     page: src.page_number ?? undefined,
     score,
@@ -68,30 +47,31 @@ function toSourceReference(
   };
 }
 
-/** Convert a saved ApiMessage (from DB) to the Message shape used by ChatMessage. */
-function toMessage(m: { id: string; conversation_id: string; role: string; content: string; sources: AskSource[] | null; created_at: string }, documents: KBDocument[]): Message {
-  const sources = m.sources
-    ? m.sources.map((s, i) => toSourceReference(s, i, documents))
-    : undefined;
+function toMessage(
+  m: { id: string; conversation_id: string; role: string; content: string; sources: AskSource[] | null; created_at: string },
+  documents: KBDocument[],
+): Message {
   return {
     id: m.id,
     conversationId: m.conversation_id,
     role: m.role as 'user' | 'assistant',
     content: m.content,
     timestamp: m.created_at,
-    sources,
+    sources: m.sources ? m.sources.map((s, i) => toSourceReference(s, i, documents)) : undefined,
   };
 }
 
-// Outer wrapper — remounts inner component on conversation change.
 export default function CenterPanel(props: CenterPanelProps) {
-  return (
-    <CenterPanelInner
-      key={props.conversation?.id ?? 'empty'}
-      {...props}
-    />
-  );
+  return <CenterPanelInner key={props.conversation?.id ?? 'empty'} {...props} />;
 }
+
+// Suggested starter prompts shown on empty conversation
+const SUGGESTIONS = [
+  'Summarise the key points in my documents',
+  'What are the main topics covered?',
+  'Find any risks or warnings mentioned',
+  'Compare the documents and highlight differences',
+];
 
 function CenterPanelInner({
   project,
@@ -104,76 +84,30 @@ function CenterPanelInner({
   const [input, setInput] = useState('');
   const [isAsking, setIsAsking] = useState(false);
   const [askError, setAskError] = useState<string | null>(null);
-
-  // ── Rename state ──────────────────────────────────────────────────────
   const [isRenaming, setIsRenaming] = useState(false);
   const [renameValue, setRenameValue] = useState(conversation?.title ?? '');
-  const renameInputRef = useRef<HTMLInputElement>(null);
-
-  // ── Dropdown menu state ───────────────────────────────────────────────
-  const [menuOpen, setMenuOpen] = useState(false);
-  const menuRef = useRef<HTMLDivElement>(null);
 
   const bottomRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const renameInputRef = useRef<HTMLInputElement>(null);
 
-  // Build the display message list from persisted messages.
-  const displayMessages: Message[] = messagesState.messages.map((m) =>
-    toMessage(m, documents),
-  );
+  const displayMessages: Message[] = messagesState.messages.map((m) => toMessage(m, documents));
 
-  // Close menu on outside click.
-  useEffect(() => {
-    if (!menuOpen) return;
-    function handleOutside(e: MouseEvent) {
-      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
-        setMenuOpen(false);
-      }
-    }
-    document.addEventListener('mousedown', handleOutside);
-    return () => document.removeEventListener('mousedown', handleOutside);
-  }, [menuOpen]);
+  useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messagesState.messages, isAsking]);
+  useEffect(() => { if (isRenaming) { renameInputRef.current?.focus(); renameInputRef.current?.select(); } }, [isRenaming]);
 
-  // Focus rename input when it appears.
-  useEffect(() => {
-    if (isRenaming) {
-      renameInputRef.current?.focus();
-      renameInputRef.current?.select();
-    }
-  }, [isRenaming]);
-
-  // Auto-scroll to latest message.
-  useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messagesState.messages, isAsking]);
-
-  // ── Rename handlers ───────────────────────────────────────────────────
-
-  function startRename() {
-    setMenuOpen(false);
-    setRenameValue(conversation?.title ?? '');
-    setIsRenaming(true);
-  }
-
+  function startRename() { setRenameValue(conversation?.title ?? ''); setIsRenaming(true); }
   async function commitRename() {
     const trimmed = renameValue.trim();
     setIsRenaming(false);
-    if (trimmed && conversation && trimmed !== conversation.title) {
+    if (trimmed && conversation && trimmed !== conversation.title)
       await onRenameConversation(conversation.id, trimmed);
-    }
   }
-
-  function cancelRename() {
-    setRenameValue(conversation?.title ?? '');
-    setIsRenaming(false);
-  }
-
-  function handleRenameKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
+  function cancelRename() { setRenameValue(conversation?.title ?? ''); setIsRenaming(false); }
+  function handleRenameKey(e: React.KeyboardEvent<HTMLInputElement>) {
     if (e.key === 'Enter') commitRename();
     if (e.key === 'Escape') cancelRename();
   }
-
-  // ── Input helpers ─────────────────────────────────────────────────────
 
   function handleInputChange(e: React.ChangeEvent<HTMLTextAreaElement>) {
     setInput(e.target.value);
@@ -183,35 +117,20 @@ function CenterPanelInner({
   }
 
   function handleKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
-    if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault();
-      handleSend();
-    }
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend(); }
   }
 
-  // ── Send ──────────────────────────────────────────────────────────────
-
-  async function handleSend() {
-    const text = input.trim();
-    if (!text || isAsking || !conversation) return;
-
+  async function handleSend(text?: string) {
+    const q = (text ?? input).trim();
+    if (!q || isAsking || !conversation) return;
     setInput('');
     setAskError(null);
     if (textareaRef.current) textareaRef.current.style.height = 'auto';
     setIsAsking(true);
-
-    // Save the user message to the DB (non-blocking — UI continues).
-    messagesState.saveUserMessage(text);
-
+    messagesState.saveUserMessage(q);
     try {
-      const result = await askQuestion({
-        question: text,
-        document_id: selectedDocumentId ?? null,
-      });
-
-      // Save the assistant message + sources to the DB.
+      const result = await askQuestion({ question: q, document_id: selectedDocumentId ?? null });
       await messagesState.saveAssistantMessage(result.answer, result.sources);
-
     } catch (err) {
       setAskError(getApiErrorMessage(err));
     } finally {
@@ -219,166 +138,161 @@ function CenterPanelInner({
     }
   }
 
-  // ── Empty state ───────────────────────────────────────────────────────
+  // ── Empty / no project state ──────────────────────────────────────────
 
   if (!conversation || !project) {
     return (
-      <main className="flex flex-col h-full bg-slate-950 items-center justify-center">
-        <div className="text-center space-y-3">
-          <div className="w-12 h-12 rounded-2xl bg-slate-800 border border-slate-700 flex items-center justify-center mx-auto">
-            <Bot size={22} className="text-slate-500" />
+      <main className="flex flex-col h-full items-center justify-center" style={{ background: '#090c14' }}>
+        <div className="text-center space-y-4 px-6 max-w-sm">
+          <div
+            className="w-16 h-16 rounded-2xl flex items-center justify-center mx-auto"
+            style={{ background: 'linear-gradient(135deg, rgba(124,58,237,0.2), rgba(79,70,229,0.2))', border: '1px solid rgba(124,58,237,0.3)' }}
+          >
+            <Sparkles size={28} style={{ color: '#7c6fcd' }} />
           </div>
-          <p className="text-sm text-slate-500">Select or create a project to get started.</p>
+          <div>
+            <p className="text-base font-semibold text-white">Welcome to RAG Studio</p>
+            <p className="text-sm mt-1" style={{ color: '#4a5568' }}>
+              Create a project and upload documents to start asking questions about your knowledge base.
+            </p>
+          </div>
         </div>
       </main>
     );
   }
 
-  const conversationTitle = conversation.title;
-
   return (
-    <main className="flex flex-col h-full bg-slate-950">
+    <main className="flex flex-col h-full" style={{ background: '#090c14' }}>
 
       {/* ── Header ── */}
-      <div className="flex items-center justify-between pl-12 pr-4 py-4 border-b border-slate-800 flex-shrink-0">
-
+      <div
+        className="flex items-center pl-14 pr-4 py-3 flex-shrink-0"
+        style={{ borderBottom: '1px solid #1e2433', background: '#0d1117' }}
+      >
         <div className="flex-1 min-w-0 mr-3">
-          <div className="flex items-center gap-2 text-xs text-slate-500 mb-1">
-            <span className="text-violet-400 truncate max-w-[140px]">{project.name}</span>
-            <span>/</span>
-            <span>Conversation</span>
+          <div className="flex items-center gap-1.5 mb-0.5">
+            <span className="text-xs font-medium truncate max-w-[120px]" style={{ color: '#7c6fcd' }}>{project.name}</span>
+            <span className="text-xs" style={{ color: '#2d3748' }}>/</span>
           </div>
-
           {isRenaming ? (
             <div className="flex items-center gap-1.5">
               <input
                 ref={renameInputRef}
                 value={renameValue}
                 onChange={(e) => setRenameValue(e.target.value)}
-                onKeyDown={handleRenameKeyDown}
+                onKeyDown={handleRenameKey}
                 onBlur={commitRename}
                 maxLength={200}
-                className="flex-1 min-w-0 bg-slate-800 border border-violet-500/60 text-white text-sm font-semibold rounded-lg px-2.5 py-1 outline-none focus:border-violet-500 transition-colors"
+                className="flex-1 min-w-0 text-sm font-semibold text-white rounded-lg px-2.5 py-1 outline-none"
+                style={{ background: '#161b27', border: '1px solid rgba(124,58,237,0.6)' }}
               />
-              <button
-                onMouseDown={(e) => { e.preventDefault(); commitRename(); }}
-                className="w-6 h-6 rounded-md bg-violet-600 hover:bg-violet-500 flex items-center justify-center transition-colors"
-              >
-                <Check size={12} className="text-white" />
+              <button onMouseDown={e => { e.preventDefault(); commitRename(); }}
+                className="w-6 h-6 rounded-md flex items-center justify-center"
+                style={{ background: '#7c3aed' }}>
+                <Check size={11} className="text-white" />
               </button>
-              <button
-                onMouseDown={(e) => { e.preventDefault(); cancelRename(); }}
-                className="w-6 h-6 rounded-md bg-slate-700 hover:bg-slate-600 flex items-center justify-center transition-colors"
-              >
-                <X size={12} className="text-slate-300" />
+              <button onMouseDown={e => { e.preventDefault(); cancelRename(); }}
+                className="w-6 h-6 rounded-md flex items-center justify-center"
+                style={{ background: '#161b27', border: '1px solid #2a3346' }}>
+                <X size={11} style={{ color: '#718096' }} />
               </button>
             </div>
           ) : (
-            <h2 className="text-sm font-semibold text-white truncate">{conversationTitle}</h2>
+            <button
+              onClick={startRename}
+              className="group flex items-center gap-1.5 text-left"
+              title="Click to rename"
+            >
+              <h2 className="text-sm font-bold text-white truncate">{conversation.title}</h2>
+              <Pencil size={11} className="opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0" style={{ color: '#4a5568' }} />
+            </button>
           )}
         </div>
 
         <div className="flex items-center gap-2 flex-shrink-0">
           {selectedDocumentId && (
-            <div className="flex items-center gap-1.5 bg-violet-600/10 border border-violet-500/30 rounded-lg px-2.5 py-1.5">
-              <FileSearch size={12} className="text-violet-400" />
-              <span className="text-xs text-violet-300">1 doc</span>
+            <div className="flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs"
+              style={{ background: 'rgba(124,58,237,0.1)', border: '1px solid rgba(124,58,237,0.3)', color: '#c4b5fd' }}>
+              <FileSearch size={11} />
+              <span>1 doc</span>
             </div>
           )}
-
-          <div className="flex items-center gap-1.5 bg-slate-800 border border-slate-700 rounded-lg px-2.5 py-1.5">
-            <Sparkles size={12} className="text-violet-400" />
-            <span className="text-xs text-slate-400">GPT-oss-20b</span>
-          </div>
-
-          {/* ⋯ menu */}
-          <div className="relative" ref={menuRef}>
-            <button
-              onClick={() => setMenuOpen((v) => !v)}
-              className="w-7 h-7 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 flex items-center justify-center transition-colors"
-            >
-              <MoreHorizontal size={14} className="text-slate-400" />
-            </button>
-
-            {menuOpen && (
-              <div className="absolute right-0 top-9 z-20 w-44 bg-slate-800 border border-slate-700 rounded-xl shadow-xl overflow-hidden">
-                <button
-                  onClick={startRename}
-                  className="w-full flex items-center gap-2.5 px-3 py-2.5 text-sm text-slate-300 hover:bg-slate-700 transition-colors"
-                >
-                  <Pencil size={13} className="text-slate-500" />
-                  Rename
-                </button>
-                <button
-                  onClick={() => {
-                    setMenuOpen(false);
-                    // Clear is local only — messages remain in DB.
-                    // Reload to restore them.
-                  }}
-                  className="w-full flex items-center gap-2.5 px-3 py-2.5 text-sm text-slate-300 hover:bg-slate-700 transition-colors"
-                >
-                  <Trash2 size={13} className="text-slate-500" />
-                  Delete conversation
-                </button>
-              </div>
-            )}
+          <div className="flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs"
+            style={{ background: '#161b27', border: '1px solid #2a3346', color: '#718096' }}>
+            <Zap size={11} style={{ color: '#7c6fcd' }} />
+            <span>RAG</span>
           </div>
         </div>
       </div>
 
-      {/* ── Message list ── */}
+      {/* ── Messages ── */}
       <div className="flex-1 overflow-y-auto px-6 py-6 space-y-6">
-
-        {/* Loading skeleton */}
         {messagesState.loading && (
-          <div className="flex items-center gap-2 text-slate-600">
+          <div className="flex items-center gap-2" style={{ color: '#4a5568' }}>
             <Loader2 size={13} className="animate-spin" />
             <span className="text-xs">Loading messages…</span>
           </div>
         )}
 
-        {/* Empty state */}
         {!messagesState.loading && displayMessages.length === 0 && (
-          <div className="flex flex-col items-center justify-center h-full text-center">
-            <div className="w-10 h-10 rounded-xl bg-slate-800 border border-slate-700 flex items-center justify-center mb-3">
-              <Sparkles size={18} className="text-slate-500" />
+          <div className="flex flex-col items-center justify-center h-full text-center space-y-6 py-12">
+            <div
+              className="w-14 h-14 rounded-2xl flex items-center justify-center"
+              style={{ background: 'rgba(124,58,237,0.1)', border: '1px solid rgba(124,58,237,0.2)' }}
+            >
+              <Bot size={24} style={{ color: '#7c6fcd' }} />
             </div>
-            <p className="text-sm text-slate-400 font-medium">Ask anything</p>
-            <p className="text-xs text-slate-600 mt-1">
-              {selectedDocumentId
-                ? 'Searching within the selected document'
-                : 'Searching across all documents'}
-            </p>
-          </div>
-        )}
-
-        {displayMessages.map((msg) => (
-          <ChatMessage key={msg.id} message={msg} />
-        ))}
-
-        {/* Typing indicator */}
-        {isAsking && (
-          <div className="flex gap-3">
-            <div className="w-8 h-8 rounded-full bg-slate-700 flex items-center justify-center flex-shrink-0">
-              <Loader2 size={15} className="text-violet-400 animate-spin" />
+            <div>
+              <p className="text-base font-semibold text-white">Ask anything</p>
+              <p className="text-sm mt-1" style={{ color: '#4a5568' }}>
+                {selectedDocumentId ? 'Searching within selected document' : 'Searching across all documents'}
+              </p>
             </div>
-            <div className="bg-slate-800 border border-slate-700 rounded-2xl rounded-tl-sm px-4 py-3 flex items-center gap-1.5">
-              {[0, 150, 300].map((delay) => (
-                <span
-                  key={delay}
-                  className="w-1.5 h-1.5 rounded-full bg-slate-500 animate-bounce"
-                  style={{ animationDelay: `${delay}ms` }}
-                />
+            {/* Suggestion chips */}
+            <div className="flex flex-wrap gap-2 justify-center max-w-lg">
+              {SUGGESTIONS.map((s) => (
+                <button
+                  key={s}
+                  onClick={() => handleSend(s)}
+                  className="text-xs rounded-lg px-3 py-2 transition-all"
+                  style={{ background: '#111620', border: '1px solid #1e2433', color: '#718096' }}
+                  onMouseEnter={e => { e.currentTarget.style.borderColor = '#7c3aed'; e.currentTarget.style.color = '#c4b5fd'; }}
+                  onMouseLeave={e => { e.currentTarget.style.borderColor = '#1e2433'; e.currentTarget.style.color = '#718096'; }}
+                >
+                  {s}
+                </button>
               ))}
             </div>
           </div>
         )}
 
-        {/* Error banner */}
+        {displayMessages.map((msg) => <ChatMessage key={msg.id} message={msg} />)}
+
+        {/* Typing indicator */}
+        {isAsking && (
+          <div className="flex gap-3">
+            <div className="w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0"
+              style={{ background: '#161b27', border: '1px solid #2a3346' }}>
+              <Loader2 size={14} className="animate-spin" style={{ color: '#7c6fcd' }} />
+            </div>
+            <div className="rounded-2xl px-4 py-3 flex items-center gap-1.5"
+              style={{ background: '#111620', border: '1px solid #1e2433', borderRadius: '4px 18px 18px 18px' }}>
+              {[0, 150, 300].map((delay) => (
+                <span key={delay} className="w-1.5 h-1.5 rounded-full animate-bounce"
+                  style={{ background: '#4a5568', animationDelay: `${delay}ms` }} />
+              ))}
+            </div>
+          </div>
+        )}
+
         {askError && (
-          <div className="flex items-start gap-2.5 bg-red-500/10 border border-red-500/30 rounded-xl px-4 py-3">
-            <AlertCircle size={15} className="text-red-400 flex-shrink-0 mt-0.5" />
-            <p className="text-sm text-red-300">{askError}</p>
+          <div className="flex items-start gap-2.5 rounded-xl px-4 py-3"
+            style={{ background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.3)' }}>
+            <AlertCircle size={14} style={{ color: '#fc8181', flexShrink: 0, marginTop: 2 }} />
+            <div>
+              <p className="text-xs font-semibold" style={{ color: '#fc8181' }}>Request failed</p>
+              <p className="text-xs mt-0.5" style={{ color: '#fc8181', opacity: 0.8 }}>{askError}</p>
+            </div>
           </div>
         )}
 
@@ -386,30 +300,36 @@ function CenterPanelInner({
       </div>
 
       {/* ── Input ── */}
-      <div className="px-6 py-4 border-t border-slate-800 flex-shrink-0">
-        <div className="flex items-end gap-3 bg-slate-900 border border-slate-700 rounded-2xl px-4 py-3 focus-within:border-violet-500/50 transition-colors">
+      <div className="px-6 py-4 flex-shrink-0" style={{ borderTop: '1px solid #1e2433', background: '#0d1117' }}>
+        <div
+          className="flex items-end gap-3 rounded-2xl px-4 py-3 transition-all"
+          style={{ background: '#111620', border: '1px solid #1e2433' }}
+          onFocus={e => (e.currentTarget.style.borderColor = 'rgba(124,58,237,0.5)')}
+          onBlur={e => (e.currentTarget.style.borderColor = '#1e2433')}
+        >
           <textarea
             ref={textareaRef}
             value={input}
             onChange={handleInputChange}
             onKeyDown={handleKeyDown}
-            placeholder={
-              selectedDocumentId
-                ? 'Ask about the selected document…'
-                : 'Ask a question about your documents…'
-            }
+            placeholder={selectedDocumentId ? 'Ask about the selected document…' : 'Ask a question about your documents…'}
             rows={1}
-            className="flex-1 bg-transparent text-sm text-slate-200 placeholder-slate-600 outline-none resize-none leading-relaxed min-h-[24px]"
+            className="flex-1 bg-transparent text-sm outline-none resize-none leading-relaxed min-h-[24px]"
+            style={{ color: '#e2e8f0' }}
           />
           <button
-            onClick={handleSend}
+            onClick={() => handleSend()}
             disabled={!input.trim() || isAsking}
-            className="w-8 h-8 rounded-xl bg-violet-600 hover:bg-violet-500 disabled:bg-slate-700 disabled:cursor-not-allowed flex items-center justify-center transition-colors flex-shrink-0 mb-0.5"
+            className="w-9 h-9 rounded-xl flex items-center justify-center transition-all flex-shrink-0"
+            style={input.trim() && !isAsking
+              ? { background: 'linear-gradient(135deg, #7c3aed, #4f46e5)' }
+              : { background: '#161b27', cursor: 'not-allowed', opacity: 0.5 }
+            }
           >
             <Send size={14} className="text-white" />
           </button>
         </div>
-        <p className="text-xs text-slate-700 mt-2 text-center">
+        <p className="text-xs mt-2 text-center" style={{ color: '#2d3748' }}>
           Enter to send · Shift+Enter for new line
         </p>
       </div>
