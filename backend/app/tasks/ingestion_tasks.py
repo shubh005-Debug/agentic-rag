@@ -1,150 +1,20 @@
-# import os
-# import tempfile
+"""
+Celery task: process_document
 
-# from celery.utils.log import get_task_logger
-
-# from celery_app import celery_app
-# from app.services.unstructured_parser import chunk_document
-# from app.services.embeddings import generate_embeddings
-# from app.database.supabase import supabase
-# from app.tasks.summary_tasks import summarize_document, summaries_enabled
-
-# logger = get_task_logger(__name__)
-
-# STORAGE_BUCKET = "documents"
-# INSERT_BATCH_SIZE = 100
-
-
-# @celery_app.task
-# def process_document(document_id: str, storage_path: str):
-#     """
-#     Process an uploaded PDF.
-
-#     The worker does NOT need access to the API's filesystem: it downloads
-#     the PDF from Supabase Storage using storage_path, so the API and the
-#     worker can run on different machines / operating systems.
-#     """
-
-#     try:
-
-#         supabase \
-#             .table("documents") \
-#             .update({
-#                 "status": "processing"
-#             }) \
-#             .eq("id", document_id) \
-#             .execute()
-
-#         # 1. Download the PDF from Supabase Storage
-#         pdf_bytes = (
-#             supabase
-#             .storage
-#             .from_(STORAGE_BUCKET)
-#             .download(storage_path)
-#         )
-
-#         # 2. Extract + chunk (temporary directory is always cleaned up).
-#         #    chunk_pdf() is structure-aware and falls back to the original
-#         #    page-based pipeline automatically if it cannot handle the file.
-#         with tempfile.TemporaryDirectory() as tmp_dir:
-
-#             pdf_path = os.path.join(tmp_dir, "document.pdf")
-
-#             with open(pdf_path, "wb") as pdf_file:
-#                 pdf_file.write(pdf_bytes)
-
-#             chunks = chunk_pdf(pdf_path)
-
-#         if not chunks:
-#             raise ValueError(
-#                 "No text could be extracted from the PDF"
-#             )
-
-#         texts = [
-#             chunk["content"]
-#             for chunk in chunks
-#         ]
-
-#         embeddings = generate_embeddings(texts)
-
-#         chunk_records = []
-
-#         for index, (chunk, embedding) in enumerate(
-#             zip(chunks, embeddings)
-#         ):
-
-#             chunk_records.append({
-#                 "document_id": document_id,
-#                 "content": chunk["content"],
-#                 "chunk_index": index,
-#                 "page_number": chunk["page_number"],
-#                 "embedding": embedding
-#             })
-
-#         # Make the task safe to re-run: remove chunks from a previous attempt
-#         supabase \
-#             .table("document_chunks") \
-#             .delete() \
-#             .eq("document_id", document_id) \
-#             .execute()
-
-#         for start in range(0, len(chunk_records), INSERT_BATCH_SIZE):
-
-#             supabase \
-#                 .table("document_chunks") \
-#                 .insert(
-#                     chunk_records[start:start + INSERT_BATCH_SIZE]
-#                 ) \
-#                 .execute()
-
-#         supabase \
-#             .table("documents") \
-#             .update({
-#                 "status": "processed"
-#             }) \
-#             .eq("id", document_id) \
-#             .execute()
-
-#         # Queue chunk summaries (background). The document is already
-#         # searchable, so a problem here must never fail the ingestion.
-#         if summaries_enabled():
-#             try:
-#                 summarize_document.delay(document_id)
-#             except Exception:
-#                 logger.exception(
-#                     "Could not queue summaries for %s",
-#                     document_id
-#                 )
-
-#         return {
-#             "document_id": document_id,
-#             "status": "processed",
-#             "number_of_chunks": len(chunks)
-#         }
-
-#     except Exception:
-
-#         logger.exception(
-#             "Document processing failed: %s",
-#             document_id
-#         )
-
-#         try:
-#             supabase \
-#                 .table("documents") \
-#                 .update({
-#                     "status": "failed"
-#                 }) \
-#                 .eq("id", document_id) \
-#                 .execute()
-#         except Exception:
-#             logger.exception(
-#                 "Could not mark document as failed: %s",
-#                 document_id
-#             )
-
-#         raise
-
+Runs after a document is uploaded to Supabase Storage.
+Steps:
+  1. Set document status → "processing"
+  2. Download the file from Supabase Storage
+  3. Parse and chunk using Unstructured (multimodal: text, tables, images)
+     Falls back to the PyMuPDF-based structured chunker for PDFs if
+     Unstructured fails or returns nothing.
+  4. Generate embeddings for all chunk contents
+  5. Upload any extracted images to Supabase Storage
+  6. Delete old chunks (makes the task safe to re-run) and insert new ones
+  7. Update document → status="processed", total_chunks, element_counts
+  8. Queue the summarisation task (if SUMMARY_ENABLED=true)
+  9. On any failure → set document status to "failed" and re-raise
+"""
 
 import base64
 import os
@@ -155,91 +25,89 @@ from pathlib import Path
 from celery.utils.log import get_task_logger
 
 from celery_app import celery_app
-from app.services.unstructured_parser import chunk_document_multimodal
-from app.services.embeddings import generate_embeddings
 from app.database.supabase import supabase
-from app.tasks.summary_tasks import summarize_document, summaries_enabled
+from app.services.embeddings import generate_embeddings
+from app.services.unstructured_parser import chunk_document_multimodal
+from app.tasks.summary_tasks import summaries_enabled, summarize_document
 
 logger = get_task_logger(__name__)
 
 STORAGE_BUCKET = "documents"
-INSERT_BATCH_SIZE = 100
+INSERT_BATCH_SIZE = 100  # rows per Supabase insert call
 
 SUPPORTED_EXTENSIONS = {
-    ".pdf",
-    ".docx",
-    ".pptx",
-    ".txt",
-    ".csv",
-    ".xlsx",
-    ".html",
-    ".htm",
+    ".pdf", ".docx", ".pptx", ".txt", ".csv", ".xlsx", ".html", ".htm",
+}
+
+# Maps MIME types to file extensions for naming uploaded images.
+_IMAGE_EXT = {
+    "image/png": ".png",
+    "image/jpeg": ".jpg",
+    "image/jpg": ".jpg",
+    "image/gif": ".gif",
+    "image/webp": ".webp",
+    "image/tiff": ".tiff",
+    "image/bmp": ".bmp",
 }
 
 
 @celery_app.task
 def process_document(document_id: str, storage_path: str):
-    """Download, parse, chunk, embed, and store a document."""
+    """Download, parse, embed, and store a document."""
 
     try:
-        supabase.table("documents").update({
-            "status": "processing"
-        }).eq("id", document_id).execute()
+        # --- 1. Mark as processing ---
+        supabase.table("documents").update(
+            {"status": "processing"}
+        ).eq("id", document_id).execute()
 
-        # Get the original filename to reliably detect the format.
-        document_result = (
+        # --- 2. Get original filename to detect format ---
+        doc_result = (
             supabase.table("documents")
             .select("filename")
             .eq("id", document_id)
             .single()
             .execute()
         )
-
-        filename = document_result.data["filename"]
+        filename = doc_result.data["filename"]
         extension = Path(filename).suffix.lower()
 
         if extension not in SUPPORTED_EXTENSIONS:
-            raise ValueError(
-                f"Unsupported document format: {extension or 'unknown'}"
-            )
+            raise ValueError(f"Unsupported document format: {extension or 'unknown'}")
 
-        # Download the original file from Supabase Storage.
+        # --- 3. Download file from Supabase Storage ---
         file_bytes = (
             supabase.storage
             .from_(STORAGE_BUCKET)
             .download(storage_path)
         )
 
-        # Save with the correct extension and parse using Unstructured.
+        # --- 4. Parse and chunk ---
+        # Save to a temp file with the correct extension so Unstructured
+        # can detect the format reliably.
         with tempfile.TemporaryDirectory() as tmp_dir:
             file_path = os.path.join(tmp_dir, f"document{extension}")
 
-            with open(file_path, "wb") as output_file:
-                output_file.write(file_bytes)
+            with open(file_path, "wb") as f:
+                f.write(file_bytes)
 
             try:
                 chunks = chunk_document_multimodal(file_path)
             except Exception:
+                # For PDFs only, fall back to the pure-PyMuPDF chunker.
                 if extension != ".pdf":
                     raise
-
-                logger.exception(
-                    "Unstructured PDF parsing failed; trying PDF fallback"
-                )
-
+                logger.exception("Unstructured PDF parsing failed; trying PyMuPDF fallback")
                 from app.services.structured_chunking import chunk_pdf
                 chunks = chunk_pdf(file_path)
 
-            # Also use the PDF fallback if Unstructured returns no chunks.
+            # Also try the fallback if Unstructured returned nothing for a PDF.
             if not chunks and extension == ".pdf":
-                logger.warning(
-                    "Unstructured returned no PDF chunks; trying PDF fallback"
-                )
-
+                logger.warning("Unstructured returned no PDF chunks; trying PyMuPDF fallback")
                 from app.services.structured_chunking import chunk_pdf
                 chunks = chunk_pdf(file_path)
 
-        # Normalize fallback chunks to the multimodal shape.
+        # Ensure every chunk has the multimodal keys (fallback chunks may not).
         for chunk in chunks:
             chunk.setdefault("element_type", "Text")
             chunk.setdefault("table_html", None)
@@ -247,11 +115,9 @@ def process_document(document_id: str, storage_path: str):
             chunk.setdefault("image_mime_type", None)
 
         if not chunks:
-            raise ValueError(
-                f"No usable text could be extracted from {extension}"
-            )
+            raise ValueError(f"No usable text could be extracted from {extension}")
 
-        # Generate embeddings for the extracted chunks.
+        # --- 5. Generate embeddings ---
         texts = [chunk["content"] for chunk in chunks]
         embeddings = generate_embeddings(texts)
 
@@ -261,7 +127,7 @@ def process_document(document_id: str, storage_path: str):
                 f"{len(embeddings)} embeddings"
             )
 
-        # Remove old image objects before re-inserting (idempotent re-run).
+        # --- 6. Remove old image objects from Storage (idempotent re-run) ---
         try:
             old_images = supabase.storage.from_(STORAGE_BUCKET).list(
                 path=f"{document_id}/images"
@@ -275,14 +141,11 @@ def process_document(document_id: str, storage_path: str):
                 if old_paths:
                     supabase.storage.from_(STORAGE_BUCKET).remove(old_paths)
         except Exception:
-            logger.warning(
-                "Could not remove old images for %s", document_id
-            )
+            logger.warning("Could not remove old images for %s", document_id)
 
+        # --- 7. Upload new images and build chunk records ---
         chunk_records = []
-
         for index, (chunk, embedding) in enumerate(zip(chunks, embeddings)):
-            # Upload image to Storage if the parser extracted one.
             image_storage_path = None
             image_b64 = chunk.get("image_base64")
             image_mime = chunk.get("image_mime_type") or "image/png"
@@ -290,22 +153,8 @@ def process_document(document_id: str, storage_path: str):
             if image_b64:
                 try:
                     image_bytes = base64.b64decode(image_b64)
-                    # Derive file extension from the actual MIME type so the
-                    # storage path reflects what is stored.  Unknown types fall
-                    # back to ".bin" (safe, never confused with an image format).
-                    _mime_ext = {
-                        "image/png": ".png",
-                        "image/jpeg": ".jpg",
-                        "image/jpg": ".jpg",
-                        "image/gif": ".gif",
-                        "image/webp": ".webp",
-                        "image/tiff": ".tiff",
-                        "image/bmp": ".bmp",
-                    }
-                    ext = _mime_ext.get(image_mime.lower(), ".bin")
-                    image_storage_path = (
-                        f"{document_id}/images/{index}{ext}"
-                    )
+                    ext = _IMAGE_EXT.get(image_mime.lower(), ".bin")
+                    image_storage_path = f"{document_id}/images/{index}{ext}"
                     supabase.storage.from_(STORAGE_BUCKET).upload(
                         image_storage_path,
                         image_bytes,
@@ -313,8 +162,7 @@ def process_document(document_id: str, storage_path: str):
                     )
                 except Exception:
                     logger.exception(
-                        "Failed to upload image for chunk %d of %s",
-                        index, document_id,
+                        "Failed to upload image for chunk %d of %s", index, document_id
                     )
                     image_storage_path = None
 
@@ -330,16 +178,17 @@ def process_document(document_id: str, storage_path: str):
                 "image_mime_type": image_mime if image_storage_path else None,
             })
 
-        # Preserve the existing database-write behavior: delete then insert.
+        # --- 8. Delete old chunks and insert new ones ---
         supabase.table("document_chunks").delete().eq(
             "document_id", document_id
         ).execute()
 
         for start in range(0, len(chunk_records), INSERT_BATCH_SIZE):
             supabase.table("document_chunks").insert(
-                chunk_records[start:start + INSERT_BATCH_SIZE]
+                chunk_records[start : start + INSERT_BATCH_SIZE]
             ).execute()
 
+        # --- 9. Mark document as processed ---
         element_counts = dict(
             Counter(c.get("element_type", "Text") for c in chunks)
         )
@@ -349,14 +198,14 @@ def process_document(document_id: str, storage_path: str):
             "element_counts": element_counts,
         }).eq("id", document_id).execute()
 
-        # Queue summaries without failing successful ingestion.
+        # --- 10. Queue background summarisation ---
+        # Summaries are generated after ingestion so a Groq quota problem
+        # can never block the document from being searchable.
         if summaries_enabled():
             try:
                 summarize_document.delay(document_id)
             except Exception:
-                logger.exception(
-                    "Could not queue summaries for %s", document_id
-                )
+                logger.exception("Could not queue summaries for %s", document_id)
 
         return {
             "document_id": document_id,
@@ -367,13 +216,12 @@ def process_document(document_id: str, storage_path: str):
     except Exception:
         logger.exception("Document processing failed: %s", document_id)
 
+        # Best-effort: mark as failed so the UI shows an error state.
         try:
-            supabase.table("documents").update({
-                "status": "failed"
-            }).eq("id", document_id).execute()
+            supabase.table("documents").update(
+                {"status": "failed"}
+            ).eq("id", document_id).execute()
         except Exception:
-            logger.exception(
-                "Could not mark document as failed: %s", document_id
-            )
+            logger.exception("Could not mark document as failed: %s", document_id)
 
         raise

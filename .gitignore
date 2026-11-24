@@ -29,5 +29,16 @@ data/
 tmp/
 temp/
 
+# Local installers / binaries (do not push)
+Release-26.09.0-0/
+Tesseract-OCR/
+
+# Node
+node_modules/
+dist/
+
+# Frontend build output
+frontend/dist/
+
 # Model/cache
 .cache/

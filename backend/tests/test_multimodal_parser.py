@@ -10,6 +10,7 @@ from unstructured.documents.elements import (
     Image,
     NarrativeText,
     Table,
+    
     Title,
 )
 
